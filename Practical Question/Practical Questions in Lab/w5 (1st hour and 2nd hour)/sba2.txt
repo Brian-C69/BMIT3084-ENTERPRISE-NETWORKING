@@ -1,0 +1,407 @@
+PART 1 – OSPFv2 SINGLE-AREA
+
+=== Task 1a – IT ROUTER ===
+enable
+conf t
+
+! Start single-area OSPFv2, process 67, router-id 1.1.1.1
+router ospf 67
+ router-id 1.1.1.1
+
+ ! One network statement per directly connected network
+ ! Adjust networks if your addressing differs
+ network 10.10.10.0 0.0.0.255 area 0   ; IT-SERVER LAN
+ network 10.10.20.0 0.0.0.255 area 0   ; ADMIN-IT / IT-LAN
+ network 192.168.1.8 0.0.0.3 area 0    ; serial to BR (primary)
+ network 192.168.1.4 0.0.0.3 area 0    ; serial to BR (backup)
+ network 172.16.2.24 0.0.0.3 area 0    ; Tunnel 3 to BR2
+
+ ! Propagate default static route into OSPF
+ default-information originate
+
+ ! Make all non-neighbor interfaces passive
+ passive-interface default
+ no passive-interface s0/1/0           ; primary serial to BR/BAC
+ no passive-interface s0/1/1           ; backup serial to BR/BAC
+exit
+
+! Make IT the DR on the shared multi-access LAN
+interface g0/0/0                        ; LAN with other OSPF router(s)
+ ip ospf priority 5                     ; 5x default priority
+exit
+
+! Tune OSPF timers on serial to BR
+interface s0/1/0
+ ip ospf hello-interval 20
+ ip ospf dead-interval 80
+exit
+end
+wr
+
+=== Task 1b – BR ROUTER ===
+enable
+conf t
+
+! Single-area OSPFv2, process 67, router-id 2.2.2.2
+router ospf 67
+ router-id 2.2.2.2
+
+ ! Use interface IP address with host wildcard (0.0.0.0)
+ network 10.10.51.1 0.0.0.0 area 0     ; BR-LAN1
+ network 10.10.50.1 0.0.0.0 area 0     ; BR-LAN2
+ network 192.168.1.10 0.0.0.0 area 0   ; serial to IT
+ network 192.168.1.6 0.0.0.0 area 0    ; backup serial
+
+ ! Passive interfaces – only OSPF neighbor links are active
+ passive-interface default
+ no passive-interface s0/1/0
+ no passive-interface s0/1/1
+exit
+
+! Tune OSPF timers on serial link to IT
+interface s0/1/0
+ ip ospf hello-interval 20
+ ip ospf dead-interval 80
+exit
+end
+wr
+=== Task 1c - BAC ROUTER ===
+enable
+conf t
+
+! Single-area OSPFv2 on BAC, process 67, router-id 3.3.3.3
+router ospf 67
+ router-id 3.3.3.3
+ passive-interface default
+ no passive-interface g0/0/0      ! toward IT / inside network
+ no passive-interface g0/0/1      ! toward BAC-LAN / inside
+exit
+
+! Enable OSPF per-interface (no network statements)
+interface g0/0/0
+ ip ospf 67 area 0
+exit
+
+interface g0/0/1
+ ip ospf 67 area 0
+exit
+
+end
+wr
+
+PART 2 – STATIC & FLOATING ROUTES
+
+=== Task 2a – IT ROUTER ===
+enable
+conf t
+! Floating static routes to BR LANs via backup serial IT–BR (S0/1/1)
+ip route 10.10.51.0 255.255.255.0 s0/1/1 113   ! BR-LAN1
+ip route 10.10.50.0 255.255.255.0 s0/1/1 113   ! BR-LAN2
+
+! Static route over GRE tunnel to BR2-LAN (172.16.1.0/24)
+! Next hop = BR2 tunnel IP 172.16.2.26
+ip route 172.16.1.0 255.255.255.0 172.16.2.26
+
+! Default static route to Internet via ISP
+ip route 0.0.0.0 0.0.0.0 209.165.200.1
+end
+wr
+
+=== Task 2b – BR2 ROUTER ===
+enable
+conf t
+! Directly connected default static route using exit interface to ISP
+ip route 0.0.0.0 0.0.0.0 s0/2/1
+
+! Static route over tunnel toward inside summarized space 10.10.0.0/16
+! Next hop = IT tunnel IP 172.16.2.25
+ip route 10.10.0.0 255.255.0.0 172.16.2.25
+end
+wr
+
+=== Task 2c – BR ROUTER ===
+enable
+conf t
+! Floating default static route to ISP via backup link (BR S0/1/1 to IT S0/1/1)
+! AD 113 so it is only used if OSPF default disappears
+ip route 0.0.0.0 0.0.0.0 s0/1/1 113
+end
+wr
+
+=== Task 2d – ISP ROUTER ===
+enable
+conf t
+! Directly connected static route to public address space 209.165.203.0/30
+! via exit interface toward IT (S0/2/0)
+ip route 209.165.203.0 255.255.255.252 s0/2/0
+end
+wr
+
+--- 36%
+
+PART 3 – DHCP ON BAC ROUTER
+
+=== BAC ROUTER – DHCP SERVER ===
+enable
+conf t
+! Exclude first 5 IPs on IT-LAN (10.10.10.1–10.10.10.5)
+ip dhcp excluded-address 10.10.10.1 10.10.10.5
+
+! Exclude first 10 IPs on BR-LAN2 (10.10.50.1–10.10.50.10)
+ip dhcp excluded-address 10.10.50.1 10.10.50.10
+
+! IT-LAN DHCP pool
+ip dhcp pool IT-LAN
+ network 10.10.10.0 255.255.255.0
+ default-router 10.10.10.1
+ dns-server 10.10.10.2
+
+! BR-LAN2 DHCP pool
+ip dhcp pool BR-LAN2
+ network 10.10.50.0 255.255.255.0
+ default-router 10.10.50.1
+ dns-server 10.10.10.2
+exit
+end
+wr
+
+! Useful checks on BAC:
+! show ip dhcp pool
+! show ip dhcp binding
+
+=== BR ROUTER – DHCP RELAY (HELPER) ===
+enable
+conf t
+! On BR-LAN2 interface (gateway for BR-LAN2-DHCP-Client)
+interface g0/0/0  ! adjust if BR-LAN2 uses different interface
+ ip helper-address 10.10.10.2
+exit
+end
+wr
+
+! Verify BR-LAN2-DHCP-Client gets IP, mask, gateway 10.10.50.1, DNS 10.10.10.2
+! Verify IT-LAN-DHCP-Client gets IP, mask, gateway 10.10.10.1, DNS 10.10.10.2
+
+PART 4 – NAT & PAT (IT ROUTER)
+
+=== IT ROUTER – STATIC NAT, POOL, ACL, INTERFACES ===
+enable
+conf t
+
+! Static NAT – map IT-SERVER inside 10.10.10.10
+! to FIRST usable public IP from 209.165.203.0/30 (209.165.203.1)
+ip nat inside source static 10.10.10.10 209.165.203.1
+
+! NAT pool IT – use SECOND usable public IP 209.165.203.2
+ip nat pool IT 209.165.203.2 209.165.203.2 netmask 255.255.255.252
+
+! Named standard ACL IT-NAT – IT-LAN then BR-LAN1
+ip access-list standard IT-NAT
+ remark IT and BR-LAN1 allowed for NAT
+ permit 10.10.10.0 0.0.0.255   ! IT-LAN
+ permit 10.10.51.0 0.0.0.255   ! BR-LAN1
+exit
+
+! Associate ACL and pool, enable PAT
+ip nat inside source list IT-NAT pool IT overload
+
+! Identify NAT interfaces
+interface g0/0/0         ! IT-LAN toward IT-SERVER and clients
+ ip nat inside
+exit
+
+interface s0/1/0         ! serial toward BR/BAC (inside)
+ ip nat inside
+exit
+
+interface s0/1/1         ! backup serial link (inside)
+ ip nat inside
+exit
+
+interface s0/2/0         ! WAN link toward ISP (outside)
+ ip nat outside
+exit
+end
+wr
+
+-- 56%
+
+PART 5 – GRE VPN TUNNEL BETWEEN BR2 AND IT
+
+=== BR2 ROUTER – TUNNEL 3 ===
+enable
+conf t
+interface tunnel 3
+ ip address 172.16.2.26 255.255.255.252
+ tunnel source s0/2/1              ! physical WAN interface on BR2
+ tunnel destination 209.165.200.2  ! IT router WAN IP
+exit
+end
+wr
+
+=== IT ROUTER – TUNNEL 3 ===
+enable
+conf t
+interface tunnel 3
+ ip address 172.16.2.25 255.255.255.252
+ tunnel source s0/2/0              ! physical WAN interface on IT
+ tunnel destination 209.165.204.2  ! BR2 router WAN IP
+exit
+end
+wr
+
+! Verification commands (either router):
+! show ip interface brief
+! show interfaces tunnel 3
+! show ip route
+
+PART 6 – ACCESS CONTROL LISTS (ACLs)
+
+=== Task 6a – BAC ROUTER TELNET ACCESS ===
+enable
+conf t
+
+! Standard named ACL allowing only TAR-UMT to telnet to BAC
+! Adjust TAR-UMT IP if different in your addressing table
+ip access-list standard TAR-UMT-TELNET
+ permit host 10.10.30.20      ! TAR-UMT PC
+exit
+
+! Configure Telnet on BAC (vty lines) with password classSBA
+line vty 0 4
+ password classSBA
+ login
+ transport input telnet
+ access-class TAR-UMT-TELNET in
+exit
+end
+wr
+
+=== Task 6b – BAC ROUTER ACL 120 TO BRANCH-SERVER ===
+enable
+conf t
+
+! Extended ACL 120 – allow TAR-UMT and all others to BRANCH-SERVER
+! but block FIRST 31 BAC-LAN hosts (10.10.30.1–10.10.30.31)
+! BRANCH-SERVER IP assumed 10.10.51.10
+access-list 120 remark Control access from BAC-LAN to BRANCH-SERVER
+access-list 120 permit ip host 10.10.30.20 host 10.10.51.10
+access-list 120 deny   ip 10.10.30.0 0.0.0.31 host 10.10.51.10
+access-list 120 permit ip any any
+
+! Apply ACL 120 outbound on interface toward BR/BRANCH-SERVER
+interface g0/0/1          ! adjust to BAC interface heading to BR/IT
+ ip access-group 120 out
+exit
+end
+wr
+
+=== Task 6c – BR ROUTER ACL 100 HTTPS CONTROL ===
+enable
+conf t
+
+! Deny SECOND half of BR-LAN2 (10.10.50.128–10.10.50.255)
+! HTTPS (TCP 443) to BRANCH-SERVER, permit all other traffic
+access-list 100 remark Deny 2nd half BR-LAN2 HTTPS to BRANCH-SERVER
+access-list 100 deny tcp 10.10.50.128 0.0.0.127 host 10.10.51.10 eq 443
+access-list 100 permit ip any any
+
+! Apply ACL 100 outbound toward BRANCH-SERVER/IT
+interface s0/1/0          ! adjust to BR interface heading to IT/BRANCH-SERVER
+ ip access-group 100 out
+exit
+end
+wr
+
+=== Task 6d – IT ROUTER NAMED EXTENDED ACL ===
+enable
+conf t
+
+! Named extended ACL ADMIN-IT-PING
+! Prevent all IT-LAN hosts from pinging IT-SERVER (10.10.10.10)
+! EXCEPT ADMIN-IT host (example 10.10.20.20 – adjust if needed)
+ip access-list extended ADMIN-IT-PING
+ remark Allow ADMIN-IT to ping IT-SERVER, block other IT-LAN pings
+ permit icmp host 10.10.20.20 host 10.10.10.10 echo
+ deny   icmp 10.10.10.0 0.0.0.255 host 10.10.10.10 echo
+ permit ip any any
+exit
+
+! Apply ACL on IT interface toward IT-LAN/IT-SERVER as required
+interface g0/0/0          ! adjust to correct IT interface
+ ip access-group ADMIN-IT-PING out
+exit
+end
+wr
+
+--- 68%
+
+PART 7 – NETWORK MANAGEMENT
+
+=== Task 7a – CDP/LLDP CONFIGURATION ===
+
+--- BR ROUTER ---
+enable
+conf t
+! Disable CDP globally on BR
+no cdp run
+
+! Enable LLDP globally on BR
+lldp run
+
+! On BR, link to switches (G0/0/1) – only RECEIVE LLDP
+interface g0/0/1
+ lldp receive
+ no lldp transmit
+exit
+end
+wr
+
+--- BR-LAN2 SWITCH ---
+enable
+
+conf t
+! Disable CDP globally on BR-LAN2 switch
+no cdp run
+
+! Enable LLDP globally on BR-LAN2 switch
+lldp run
+
+! On BR-LAN2 switch, link to BR router (G0/1) – only SEND LLDP
+interface g0/1
+ lldp transmit
+ no lldp receive
+exit
+
+! Disable LLDP completely on access ports F0/1 and F0/10
+interface range f0/1 , f0/10
+ no lldp transmit
+ no lldp receive
+exit
+end
+wr
+
+! Verification
+! show cdp neighbors
+! show lldp neighbors
+! show lldp interface g0/0/1
+! show lldp interface g0/1
+
+=== Task 7b – IOS IMAGE BACKUP FROM BR TO BRANCH-SERVER (TFTP) ===
+
+--- BR ROUTER ---
+
+enable
+show flash:          ! confirm IOS image filename
+
+! Example (adjust filename if different in Packet Tracer):
+BR#copy flash: tftp:
+Source filename []? isr4300-universalk9.16.06.04.SPA.bin
+Address or name of remote host []? 10.10.51.10
+Destination filename [isr4300-universalk9.16.06.04.SPA.bin]? 
+
+! Verify on TFTP server (BRANCH-SERVER at 10.10.51.10) that file is present
+
+
+--- 81%
+
