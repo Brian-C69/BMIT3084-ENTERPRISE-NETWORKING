@@ -108,6 +108,32 @@ interface <INTF>
  ip ospf <PROCESS-ID> area <AREA-ID>
 ```
 
+### OSPF cost + bandwidth (auto-cost) quick notes
+- Default OSPF interface cost is derived from bandwidth:
+  - `cost = reference_bandwidth / interface_bandwidth`
+  - IOS default reference bandwidth is often `100 Mbps` (so fast links may all look like cost 1 unless you change it).
+- Two common ways to influence cost:
+  - Set explicit cost on an interface (overrides auto): `ip ospf cost <COST>`
+  - Set correct interface bandwidth and adjust reference bandwidth:
+    - Interface: `bandwidth <Kbps>` (affects OSPF/EIGRP metric calculations; does not change actual physical speed)
+    - OSPF global: `auto-cost reference-bandwidth <Mbps>`
+
+### Commands (cost/bandwidth tuning)
+```txt
+interface <INTF>
+ bandwidth <Kbps>
+ ip ospf cost <COST>
+!
+router ospf <PROCESS-ID>
+ auto-cost reference-bandwidth <Mbps>
+```
+
+### Verify cost/bandwidth
+```txt
+show ip ospf interface <INTF>
+show ip ospf
+```
+
 ### Wildcard for `network` statement (formula)
 - `wildcard = 255.255.255.255 - subnet mask`
 - Example: `/30` mask `255.255.255.252` -> wildcard `0.0.0.3`
@@ -298,6 +324,25 @@ lt 1024
 neq 53
 ```
 
+### Numbered extended ACL examples (common services)
+
+**DHCP (client/server ports)**
+- `bootps` = UDP/67 (server), `bootpc` = UDP/68 (client)
+```txt
+access-list 188 permit udp any eq bootpc any eq bootps
+access-list 188 permit udp any eq bootps any eq bootpc
+```
+
+**Other common permits (examples)**
+```txt
+access-list 188 permit udp any any eq domain     ! DNS (53)
+access-list 188 permit udp any any eq ntp        ! NTP (123)
+access-list 188 permit tcp any any eq ssh        ! SSH (22)
+access-list 188 permit tcp any any eq www        ! HTTP (80)
+access-list 188 permit tcp any any eq 443        ! HTTPS (443)
+access-list 188 permit icmp any any              ! ICMP
+```
+
 ### Verify / troubleshoot ACLs
 ```txt
 show access-lists
@@ -393,9 +438,19 @@ interface s0/1/0
  ip nat outside
 ```
 
+### NAT "interesting traffic" ACL (example)
+```txt
+access-list 1 permit 192.168.10.0 0.0.0.255
+```
+
 ### Static NAT (1:1)
 ```txt
 ip nat inside source static 192.168.10.254 209.165.201.5
+```
+
+### Static PAT (port forwarding)
+```txt
+ip nat inside source static tcp 192.168.10.10 80 209.165.200.10 8080
 ```
 
 ### Dynamic NAT pool
@@ -404,16 +459,21 @@ ip nat pool NAT-POOL1 209.165.200.226 209.165.200.240 netmask 255.255.255.224
 ip nat inside source list 1 pool NAT-POOL1
 ```
 
-### PAT / overload
+### PAT / NAT overload (many-to-one)
+**Overload using a public pool**
+```txt
+ip nat inside source list 1 pool NAT-POOL1 overload
+```
+
+**Overload using the outside interface (most common Internet edge)**
 ```txt
 ip nat inside source list 1 interface serial 0/1/0 overload
-ip nat inside source list 1 pool NAT-POOL1 overload
 ```
 
 ### Verify / tune / clear NAT
 ```txt
 show ip nat translations
- show ip nat translations verbose
+show ip nat translations verbose
 show ip nat statistics
 ip nat translation timeout <SECONDS>
 clear ip nat translation *
@@ -497,6 +557,14 @@ snmp-server community <COMMUNITY> RO
 ```txt
 copy running-config startup-config
 ```
+
+### Backup config to FTP (copy run to ftp)
+```txt
+copy running-config ftp:
+Address or name of remote host []? <FTP_SERVER_IP>
+Destination filename [running-config]? <R1-running-config>
+```
+
 
 ---
 
